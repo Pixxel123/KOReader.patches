@@ -17,6 +17,11 @@ let through, so night mode can still be turned on by hand inside a comic, from
 the menu or with the "Set night mode" gesture. Anything that switches night
 mode without going through DeviceListener isn't held off.
 
+Only night mode is changed. This patch never sets warmth or brightness, and
+AutoWarmth still sets warmth on its schedule while night mode is held off.
+Other plugins that change warmth or brightness along with night mode still do
+so when this patch changes it.
+
 What the schedule last wanted is kept in G_reader_settings, so quitting or
 crashing with a comic open doesn't leave night mode stuck off.
 
