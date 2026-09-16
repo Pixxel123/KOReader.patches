@@ -1,3 +1,4 @@
+-- 2-manga-no-history.lua v1.0.0
 --[[
 Keep comic archives out of KOReader's history.
 

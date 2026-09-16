@@ -1,3 +1,4 @@
+-- 2-manga-nightmode.lua v2.0.0
 --[[
 Keep comic artwork un-inverted in night mode, while menus stay dark.
 

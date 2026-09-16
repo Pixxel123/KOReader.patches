@@ -4,7 +4,7 @@ User patches for KOReader. I use them on a Kindle Paperwhite, mostly for reading
 
 ### [🞂 How to install a user patch?](https://koreader.rocks/user_guide/#L2-userpatches)
 
-Tested on KOReader 2026.07.
+Tested on KOReader 2026.07. Each patch has its own version number, on its first line.
 
 ### [🞂 2-manga-nightmode.lua](2-manga-nightmode.lua)
 

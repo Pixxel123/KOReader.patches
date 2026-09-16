@@ -1,3 +1,4 @@
+-- 2-manga-no-stats.lua v1.0.0
 --[[
 Keep comic archives out of the reading statistics.
 

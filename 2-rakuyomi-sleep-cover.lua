@@ -1,3 +1,4 @@
+-- 2-rakuyomi-sleep-cover.lua v1.1.0
 --[[
 Sleep screen: show the manga's cover instead of page 1 of the chapter.
 
