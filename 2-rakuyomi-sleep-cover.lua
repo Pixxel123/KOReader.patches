@@ -24,6 +24,10 @@ number is used only when it's a whole integer: sources that split a chapter
 into parts write 1.3 or 0.05, which would match the wrong volume or none.
 Those keep the series cover.
 
+The next volume's cover is saved too, so chapters Rakuyomi downloads ahead
+have their cover when they're read offline. That's one volume ahead only:
+later volumes show the series cover until they're opened with wifi on.
+
 Cover lookup order, first hit wins:
     .posters-hires/<hash>.v<volume>.jpg   volume cover for this chapter
     .posters-hires/<hash>.jpg / .png      series cover
@@ -49,8 +53,11 @@ requirements are honoured here: a genuine identifying User-Agent, requests
 paced under the 5 req/s per-IP allowance, one fetch at a time (a lock
 directory in .posters-hires), and a hard stop with a persisted cooldown on 429
 or 403 rather than retrying into an IP ban. Covers are cached on disk and
-never re-fetched. Per their Acceptable Use Policy, MangaDex is the source of
-this cover art.
+never re-fetched. A lookup that doesn't get what it needs (no match, no cover
+for that volume, a chapter not in a volume yet, a failed connection) is tried
+at most three times, at least a day apart, and then left alone for 30 days.
+Tries are kept in .posters-hires/.fetch-tries, and deleting it resets them.
+Per their Acceptable Use Policy, MangaDex is the source of this cover art.
 
 Needs sleep screen type "Show book cover on sleep screen". Any failure falls
 back to stock behaviour. Install to koreader/patches/.
@@ -101,12 +108,20 @@ local LOCK_DIR = HIRES_DIR .. "/.fetch-lock"
 -- than this was left by a process that was killed before it could remove it.
 local LOCK_STALE_AFTER = 600
 
+-- A fetch that doesn't get what it needs (no match, no cover for that volume,
+-- a dead connection) would otherwise run again on every open and use battery
+-- for nothing. The same lookup is tried at most MAX_TRIES times, RETRY_AFTER
+-- apart.
+local MAX_TRIES = 3
+local RETRY_AFTER = 24 * 3600
+-- Once the last try is this old it starts over, in case MangaDex has added
+-- the cover since. Older entries are dropped from the file.
+local FORGET_AFTER = 30 * 24 * 3600
+
 -- chapter path -> { series = , chapter = }, or false once looked up and absent
 local info_cache = {}
 -- hash -> { mtime = , map = { [chapter] = volume } }, from the .volmap files
 local volmap_cache = {}
--- "hash#chapter" keys tried this session, so a miss isn't retried every open
-local fetch_attempted = {}
 
 local byte = string.byte
 
@@ -159,6 +174,12 @@ local function cooldownRemaining()
     local until_time = tonumber(f:read("*l") or "")
     f:close()
     return until_time and math.max(0, until_time - os.time()) or 0
+end
+
+-- "count last_time key" lines, one for each thing a fetch was started for.
+-- Only the parent reads and writes it.
+local function triesPath()
+    return HIRES_DIR .. "/.fetch-tries"
 end
 
 -- True while another fetch holds the lock. Clears a stale one.
@@ -269,12 +290,31 @@ local function rowsForSeries(series)
     return rows
 end
 
+-- The volume after this one, out of the volumes that have chapters in the map.
+-- Compared as numbers, because MangaDex volumes skip (1, 2, 4) and have
+-- decimals (1, 1.5, 2), so adding 1 would miss them.
+local function nextVolume(map, volume)
+    local current = tonumber(volume)
+    if not current then return nil end
+
+    local best, best_num
+    for _, v in pairs(map) do
+        local num = tonumber(v)
+        -- The same number can be written two ways ("2", "2.0"), and pairs goes
+        -- in a different order over the map file than over the JSON. Taking
+        -- the smaller string keeps the fetch and the check before it agreeing.
+        if num and num > current and (not best_num or num < best_num
+                or (num == best_num and v < best)) then
+            best, best_num = v, num
+        end
+    end
+    return best
+end
+
 -- Reads the "chapter volume" lines the fetch wrote, so the sleep path can
 -- resolve a volume with no network. Cached by file timestamp, so a map
 -- rewritten by a background fetch is picked up automatically.
-local function volumeFor(hash, chapter)
-    if not chapter then return nil end
-
+local function volmapFor(hash)
     local path = volmapPath(hash)
     local mtime = lfs.attributes(path, "modification") or 0
     local cached = volmap_cache[hash]
@@ -292,14 +332,29 @@ local function volumeFor(hash, chapter)
         cached = { mtime = mtime, map = map }
         volmap_cache[hash] = cached
     end
-    return cached.map[chapter]
+    return cached.map
 end
 
--- This chapter's own volume cover and nothing else. The fetch uses it to ask
--- "is THIS volume present", which the fallback chain below can't answer.
+local function volumeFor(hash, chapter)
+    if not chapter then return nil end
+    return volmapFor(hash)[chapter]
+end
+
+-- This chapter's own volume cover and nothing else. The sleep path tries it
+-- before falling back to the series cover.
 local function volumeCover(hash, chapter)
     local volume = volumeFor(hash, chapter)
     return volume and existingImage(coverBase(hash, volume)) or nil
+end
+
+-- This chapter's volume cover, and the next volume's when the map has one.
+-- The fetch runs until both are on disk, so chapters downloaded ahead have
+-- their cover offline.
+local function volumeCoversOnDisk(hash, chapter)
+    if not volumeCover(hash, chapter) then return false end
+    local map = volmapFor(hash)
+    local next_volume = nextVolume(map, map[chapter])
+    return not next_volume or existingImage(coverBase(hash, next_volume)) ~= nil
 end
 
 local function seriesCover(hash)
@@ -646,12 +701,19 @@ local function fetchInChild(series, chapter, cover_url, hash)
     local map = volmapFromAggregate(aggregate)
     writeVolmap(map)
 
-    -- 5. That volume's cover.
-    local volume = map[chapter]
-    local filename = volume and by_volume[volume]
-    if filename then
-        saveImage(UPLOADS .. manga_id .. "/" .. filename, coverBase(hash, volume))
+    -- 5. That volume's cover, then the next volume's, so chapters Rakuyomi
+    -- downloads ahead have their cover when read offline. Either may already
+    -- be on disk, since the fetch also runs when only the next one is missing.
+    local function saveVolumeCover(volume)
+        local filename = volume and by_volume[volume]
+        if filename and not existingImage(coverBase(hash, volume)) then
+            saveImage(UPLOADS .. manga_id .. "/" .. filename,
+                coverBase(hash, volume))
+        end
     end
+    local volume = map[chapter]
+    saveVolumeCover(volume)
+    saveVolumeCover(nextVolume(map, volume))
 end
 
 -- Of several sources, prefer one whose URL already names the MangaDex id.
@@ -660,6 +722,66 @@ local function bestRow(rows)
         if mangaIdFromUrl(row.cover_url) then return row end
     end
     return rows[1]
+end
+
+-- key -> { count = , last = }, from the tries file.
+local function readTries()
+    local tries = {}
+    local f = io.open(triesPath(), "r")
+    if not f then return tries end
+    for line in f:lines() do
+        local count, last, key = line:match("^(%d+) (%d+) (.+)$")
+        if key then
+            tries[key] = { count = tonumber(count), last = tonumber(last) }
+        end
+    end
+    f:close()
+    return tries
+end
+
+-- Drops entries that haven't been tried for FORGET_AFTER, so the file stays
+-- small. Returns false if it couldn't be written.
+local function writeTries(tries, now)
+    local path = triesPath()
+    local f = io.open(path .. ".part", "w")
+    if not f then return false end
+    for key, try in pairs(tries) do
+        if now - try.last < FORGET_AFTER then
+            f:write(string.format("%d %d %s\n", try.count, try.last, key))
+        end
+    end
+    f:close()
+    if os.rename(path .. ".part", path) then return true end
+    os.remove(path .. ".part")
+    return false
+end
+
+-- Tries are counted against what a fetch is after, not the chapter, or every
+-- chapter opened would get its own tries. That's a volume's covers when the
+-- map places the chapter, the map when it has no line for this chapter, and
+-- otherwise the MangaDex match and the series cover.
+local function tryKey(hash, chapter)
+    local volume = volumeFor(hash, chapter)
+    if volume then return hash .. "#v" .. volume end
+    if chapter and isFile(volmapPath(hash)) then return hash .. "#unmapped" end
+    return hash .. "#series"
+end
+
+-- Records a try and returns true, or returns false when the key has used up
+-- its tries or was last tried too recently.
+local function takeTry(key)
+    local now = os.time()
+    local tries = readTries()
+    local try = tries[key]
+    if try and now - try.last >= FORGET_AFTER then try = nil end
+    if try and (try.count >= MAX_TRIES or now - try.last < RETRY_AFTER) then
+        return false
+    end
+
+    lfs.mkdir(HIRES_DIR)
+    tries[key] = { count = (try and try.count or 0) + 1, last = now }
+    -- If it can't be recorded it can't be limited, so don't fetch.
+    return writeTries(tries, now)
 end
 
 local function fetchCover(info)
@@ -681,22 +803,23 @@ local function fetchCover(info)
     if #rows == 0 then return end
     local row = bestRow(rows)
 
-    -- Keyed on the chapter too, so a chapter in a volume we haven't fetched
-    -- still gets a look even though the series cover already exists.
-    local key = row.hash .. "#" .. (info.chapter or "-")
-    if fetch_attempted[key] then return end
-    fetch_attempted[key] = true
-
-    -- Nothing to do if what this chapter would show is already on disk.
+    -- Nothing to do if what this chapter would show is already on disk, along
+    -- with the next volume's cover for chapters Rakuyomi downloaded ahead.
     for _, r in ipairs(rows) do
         if info.chapter then
-            if volumeCover(r.hash, info.chapter) then return end
+            if volumeCoversOnDisk(r.hash, info.chapter) then return end
         else
             if seriesCover(r.hash) then return end
         end
     end
 
-    lfs.mkdir(HIRES_DIR)
+    -- Counted before forking, so a child that gets killed still uses a try.
+    local key = tryKey(row.hash, info.chapter)
+    if not takeTry(key) then
+        logger.dbg(TAG, "not trying", key, "again yet")
+        return
+    end
+
     log("fetching cover for", info.series, "chapter", info.chapter or "?")
 
     -- Double fork: the fetching process is handed to init, which reaps it, so

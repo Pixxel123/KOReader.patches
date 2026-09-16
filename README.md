@@ -26,7 +26,7 @@ The three manga patches treat .cbz, .cbr and .cbt files as comics. If you change
 
 For the [tachibana-shin fork of Rakuyomi](https://github.com/tachibana-shin/rakuyomi). When a chapter is open, the sleep screen shows the manga's cover instead of the chapter's first page.
 
-If Wi-Fi is on when you open a chapter, it downloads a full-size cover from [MangaDex](https://mangadex.org), using the cover for the volume the chapter is in when it can work that out. Until then it uses Rakuyomi's own smaller cover.
+If Wi-Fi is on when you open a chapter, it downloads a full-size cover from [MangaDex](https://mangadex.org), using the cover for the volume the chapter is in when it can work that out. Until then it uses Rakuyomi's own smaller cover. It also gets the next volume's cover, so chapters Rakuyomi downloads ahead still show the right cover when you read them offline. That only reaches one volume ahead, so if you download chapters from several volumes at once, the later volumes show the series cover until you open them with Wi-Fi on. If a cover can't be found, it tries at most three times, a day apart, and then waits a month before looking again, so it doesn't keep using Wi-Fi and battery on it.
 
 Needs **Wallpaper → Show book cover on sleep screen** in the Sleep screen menu. Tested with Rakuyomi 1.41.8.
 
