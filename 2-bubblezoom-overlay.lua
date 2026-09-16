@@ -1,10 +1,11 @@
--- 2-bubblezoom-overlay.lua v1.0.0
+-- 2-bubblezoom-overlay.lua v1.1.0
 --[[
 Change how Bubble Zoom shows an enlarged speech bubble.
 
 Only the bubble is enlarged: its outline, lettering and tail, with a thin white
-edge so it stands out from the page behind it, instead of a rectangle cut out
-of the page. If the bubble's shape can't be found cleanly (a balloon open on one
+edge that fades out so it stands out from the page behind it, instead of a
+rectangle cut out of the page. It's placed over the original bubble, so the
+original isn't seen beside it. If the bubble's shape can't be found cleanly (a balloon open on one
 side, or a grey balloon), the rectangle is shown as before. Set SHAPED to false
 to always show rectangles.
 
@@ -157,30 +158,40 @@ local function drawFromReaderPage(view, doc, target, x, y, rect, pageno, zoom, r
     end
 end
 
--- Where to put an enlargement on the screen. screen_rect is where Bubble Zoom
--- put it, src_w/src_h the enlarged area's size in page pixels, area the part
--- of the screen it may use. Returns the enlargement and top-left corner that
--- keep it inside area, shrinking it no further than 1x.
-local function placeOnScreen(screen_rect, src_w, src_h, scale, zoom, area)
+-- Where to put an enlargement on the screen. orig is the original balloon's
+-- screen rect, src_w/src_h the enlarged area's size in page pixels, area the
+-- part of the screen it may use (area.slack: how far past it the enlargement
+-- may go to keep covering the original). Returns the enlargement and top-left
+-- corner that keep it inside area and over the original, so the original
+-- isn't seen beside it, shrinking it no further than 1x. The enlargement is
+-- never smaller than the original, so whenever it fits on the screen it can
+-- cover the original too.
+local function placeOnScreen(orig, src_w, src_h, scale, zoom, area)
     local w, h = src_w * scale * zoom, src_h * scale * zoom
     local fit = math.min(1, area.w / w, area.h / h)
     if fit < 1 then
         scale = math.max(1, scale * fit)
         w, h = src_w * scale * zoom, src_h * scale * zoom
     end
-    local x = screen_rect.x + (screen_rect.w - w) / 2
-    local y = screen_rect.y + (screen_rect.h - h) / 2
-    if w <= area.w then
-        x = math.max(area.x, math.min(x, area.x + area.w - w))
-    else
-        x = area.x + (area.w - w) / 2
+    local slack = area.slack or 0
+    -- One axis: o/ol the original, a/al the area, l the enlargement's size.
+    local function axis(o, ol, a, al, l)
+        if l > al then
+            return a + (al - l) / 2
+        end
+        local lo, hi = a, a + al - l
+        local clo, chi = o + ol - l, o
+        local xlo, xhi = math.max(lo, clo), math.min(hi, chi)
+        if xlo > xhi then
+            xlo, xhi = math.max(clo, lo - slack), math.min(chi, hi + slack)
+            if xlo > xhi then
+                xlo, xhi = lo, hi
+            end
+        end
+        local centred = o + (ol - l) / 2
+        return math.max(xlo, math.min(centred, xhi))
     end
-    if h <= area.h then
-        y = math.max(area.y, math.min(y, area.y + area.h - h))
-    else
-        y = area.y + (area.h - h) / 2
-    end
-    return scale, x, y
+    return scale, axis(orig.x, orig.w, area.x, area.w, w), axis(orig.y, orig.h, area.y, area.h, h)
 end
 
 local function keepOnScreen(bubblezoom)
@@ -191,10 +202,19 @@ local function keepOnScreen(bubblezoom)
     if not (rect and src and page and scale and zoom and zoom > 0 and view.dimen) then
         return
     end
-    local screen_rect = view:pageToScreenTransform(page, rect)
-    if not screen_rect or screen_rect.w <= 0 or screen_rect.h <= 0 then
+    -- Where the original balloon is on the screen. The transform clips to the
+    -- screen, so it's taken at the pressed point, which is on the screen, and
+    -- the balloon's rect is worked out from there.
+    local tap_x = bubblezoom.overlay_tap_x or (src.x + src.w / 2)
+    local tap_y = bubblezoom.overlay_tap_y or (src.y + src.h / 2)
+    local tap = view:pageToScreenTransform(page, Geom:new{ x = tap_x, y = tap_y, w = 1, h = 1 })
+    if not tap then
         return
     end
+    local orig = {
+        x = tap.x - (tap_x - src.x) * zoom, y = tap.y - (tap_y - src.y) * zoom,
+        w = src.w * zoom, h = src.h * zoom,
+    }
     local margin = Screen:scaleBySize(SCREEN_MARGIN)
     local bottom = view.dimen.y + view.dimen.h
     if view.footer_visible and view.footer then
@@ -204,16 +224,17 @@ local function keepOnScreen(bubblezoom)
         x = view.dimen.x + margin,
         y = view.dimen.y + margin,
         w = view.dimen.w - 2 * margin,
+        slack = margin,
     }
     area.h = bottom - margin - area.y
     if area.w <= 0 or area.h <= 0 then
         return
     end
-    local new_scale, x, y = placeOnScreen(screen_rect, src.w, src.h, scale, zoom, area)
+    local new_scale, x, y = placeOnScreen(orig, src.w, src.h, scale, zoom, area)
     bubblezoom.overlay_scale_active = new_scale
     bubblezoom.overlay_rect = Geom:new{
-        x = rect.x + (x - screen_rect.x) / zoom,
-        y = rect.y + (y - screen_rect.y) / zoom,
+        x = src.x + (x - orig.x) / zoom,
+        y = src.y + (y - orig.y) / zoom,
         w = src.w * new_scale,
         h = src.h * new_scale,
     }
@@ -229,42 +250,54 @@ local function withMinPadding(rect, padded, page_size)
     return Geom:new{ x = x1, y = y1, w = x2 - x1, h = y2 - y1 }
 end
 
--- Breadth-first growth: from every pixel whose state is in `from`, grow 4-way
--- up to `steps` pixels, marking the pixels reached `to`. With dark_only, only
--- into pixels that aren't light.
-local function grow(shape, light, w, h, from, to, steps, dark_only, queue, dist)
+-- Chamfer (3-4) distance from the pixels whose state is in is_inside, in
+-- thirds of a pixel, capped at cap pixels (anything farther gets the cap).
+-- Only pixels within the cap are visited, in order of distance.
+local function distanceFrom(shape, w, h, is_inside, cap, dist)
     local n = w * h
-    local head, tail = 0, 0
+    local far = cap * 3 + 3
+    local buckets = {}
+    for d = 0, far do buckets[d] = {} end
+    local seeds = buckets[0]
     for i = 0, n - 1 do
-        if from[shape[i]] then
+        if is_inside[shape[i]] then
             dist[i] = 0
-            queue[tail] = i
-            tail = tail + 1
+            local x = i % w
+            -- Only edge pixels of the shape start the walk outwards.
+            if (x > 0 and not is_inside[shape[i - 1]]) or (x < w - 1 and not is_inside[shape[i + 1]])
+                or (i >= w and not is_inside[shape[i - w]]) or (i < n - w and not is_inside[shape[i + w]]) then
+                seeds[#seeds + 1] = i
+            end
+        else
+            dist[i] = far
         end
     end
-    while head < tail do
-        local i = queue[head]
-        head = head + 1
-        local d = dist[i]
-        if d < steps then
-            local x = i % w
-            for k = 1, 4 do
-                local j
-                if k == 1 then
-                    j = x > 0 and i - 1 or -1
-                elseif k == 2 then
-                    j = x < w - 1 and i + 1 or -1
-                elseif k == 3 then
-                    j = i - w
-                else
-                    j = i + w
+    for d = 0, far - 3 do
+        local bucket = buckets[d]
+        for k = 1, #bucket do
+            local i = bucket[k]
+            if dist[i] == d then
+                local x = i % w
+                local up, down = i >= w, i < n - w
+                local left, right = x > 0, x < w - 1
+                local function relax(j, nd)
+                    if nd < dist[j] then
+                        dist[j] = nd
+                        local b = buckets[nd]
+                        b[#b + 1] = j
+                    end
                 end
-                if j >= 0 and j < n and not from[shape[j]] and shape[j] ~= to
-                    and (not dark_only or light[j] == 0) then
-                    shape[j] = to
-                    dist[j] = d + 1
-                    queue[tail] = j
-                    tail = tail + 1
+                if left then relax(i - 1, d + 3) end
+                if right then relax(i + 1, d + 3) end
+                if up then
+                    relax(i - w, d + 3)
+                    if left and d + 4 < far then relax(i - w - 1, d + 4) end
+                    if right and d + 4 < far then relax(i - w + 1, d + 4) end
+                end
+                if down then
+                    relax(i + w, d + 3)
+                    if left and d + 4 < far then relax(i + w - 1, d + 4) end
+                    if right and d + 4 < far then relax(i + w + 1, d + 4) end
                 end
             end
         end
@@ -556,19 +589,27 @@ local function composeShape(content, tap_x, tap_y, o)
         return nil, "the shape runs into the artwork", best_sides, stats
     end
 
-    -- The white edge around everything.
-    grow(shape, light, aw, ah, solid, 5, math.min(255, math.max(1, math.floor(o.halo / f + 0.5))), false, queue, dist)
-
-    -- Masks at the working size, scaled back up smoothly.
+    -- The white edge and a soft outer edge, from the distance to the shape.
+    local halo_px = math.max(1, o.halo / f)
+    local outer = halo_px * 3
+    local sdist = ffi.new("int32_t[?]", n)
+    distanceFrom(shape, aw, ah, solid, math.ceil(halo_px) + 2, sdist)
+    -- Masks at the working size, scaled back up smoothly: body = the page's
+    -- pixels, fading to white one pixel outside the shape; all = alpha, full
+    -- until a pixel short of the edge's end and gone a pixel past it.
     local body_bb = Blitbuffer.new(aw, ah, Blitbuffer.TYPE_BB8)
     local all_bb = Blitbuffer.new(aw, ah, Blitbuffer.TYPE_BB8)
     local bp, bs = ffi.cast("uint8_t *", body_bb.data), tonumber(body_bb.stride)
     local ap, as = ffi.cast("uint8_t *", all_bb.data), tonumber(all_bb.stride)
     for y = 0, ah - 1 do
         for x = 0, aw - 1 do
-            local s = shape[y * aw + x]
-            if solid[s] then bp[y * bs + x] = 255 end
-            if s ~= 2 and s ~= 0 then ap[y * as + x] = 255 end
+            local d = sdist[y * aw + x]
+            local b = 1 - d / 3
+            local a = (outer + 3 - d) / 6
+            if b < 0 then b = 0 elseif b > 1 then b = 1 end
+            if a < 0 then a = 0 elseif a > 1 then a = 1 end
+            bp[y * bs + x] = math.floor(b * 255 + 0.5)
+            ap[y * as + x] = math.floor(a * 255 + 0.5)
         end
     end
     if aw ~= W or ah ~= H then
