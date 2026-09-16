@@ -638,17 +638,26 @@ local function fetchInChild(series, chapter, cover_url, hash)
         return ok and res or nil
     end
 
+    -- Images already downloaded in this fetch, by URL, or false when the
+    -- download failed or wasn't an image, so the same file is never requested
+    -- twice. The series cover is usually volume 1's file.
+    local downloaded = {}
+
     -- Downloads an image to base + the right extension. Refuses anything that
     -- isn't JPEG or PNG so an error page can't end up as a cover.
     local function saveImage(url, base)
-        local data = get(url, socketutil.FILE_BLOCK_TIMEOUT,
+        if downloaded[url] == false then return false end
+        local data = downloaded[url] or get(url, socketutil.FILE_BLOCK_TIMEOUT,
             socketutil.FILE_TOTAL_TIMEOUT)
+        -- Counts as failed unless it passes the checks below.
+        downloaded[url] = false
         if not data or #data < 10240 then return false end
 
         local ext
         if data:byte(1) == 0xFF and data:byte(2) == 0xD8 then ext = ".jpg"
         elseif data:sub(2, 4) == "PNG" then ext = ".png"
         else return false end
+        downloaded[url] = data
 
         local dest = base .. ext
         local f = io.open(dest .. ".part", "wb")
