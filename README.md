@@ -6,6 +6,20 @@ User patches for KOReader. I use them on a Kindle Paperwhite, mostly for reading
 
 Tested on KOReader 2026.07. Each patch has its own version number, on its first line.
 
+### [🞂 2-bubblezoom-overlay.lua](2-bubblezoom-overlay.lua)
+
+For [Bubble Zoom](https://github.com/anezih/bubblezoom.koplugin). Enlarges just the bubble, with its outline and a thin white edge, instead of a rectangle cut out of the page, and keeps it on the screen and clear of the status bar. When a balloon is joined to another, both are enlarged, so no lettering gets cut off. If the bubble's shape can't be found cleanly, you get the rectangle as before.
+
+It also makes Bubble Zoom work with a White Threshold below 255 (in the reader's bottom menu), and keeps the enlarged bubble right when the screen is redrawn. Works with or without the patch below. Tested with Bubble Zoom 1.2.1.
+
+### [🞂 2-bubblezoom-panelsplus.lua](2-bubblezoom-panelsplus.lua)
+
+For [Bubble Zoom](https://github.com/anezih/bubblezoom.koplugin) and [Panels+](https://github.com/KristanLaimon/PanelsPlus). Long-press a speech bubble to enlarge it, or long-press anywhere else on the page to open that panel. Without it, Bubble Zoom takes every long-press on a comic page, so a long-press never opens a panel.
+
+Bubble Zoom finds a bubble by filling the light area you press, so faces, clothes and sky come back as bubbles too. Before anything is enlarged, the patch checks that the area isn't too big or touching the edge of the page, has lettering inside it, and has a fairly smooth, rounded outline. On test pages from five series it wasn't tuned on, about 93% of long-presses on bubbles enlarged them, and about 2% of long-presses elsewhere enlarged something, down from about half. Balloons with very little lettering, like "..." or "?", open the panel instead.
+
+Bubble Zoom needs to be switched on in its menu. Tested with Bubble Zoom 1.2.1 and Panels+ 1.4.0.
+
 ### [🞂 2-manga-nightmode.lua](2-manga-nightmode.lua)
 
 Shows comic pages in their normal colours in night mode, while menus and Rakuyomi's screens stay dark. Night mode stays on: comic pages are drawn already inverted, the same as the reader's **Invert Document** option (always on for comics), so the two inversions cancel out. Page margins and the gaps between pages keep their day colours. It doesn't change night mode, warmth or brightness, so AutoWarmth, other schedules and the night mode toggle work as usual. Turn night mode off and comics show normally.
