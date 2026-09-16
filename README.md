@@ -8,7 +8,7 @@ Tested on KOReader 2026.07. Each patch has its own version number, on its first 
 
 ### [🞂 2-manga-nightmode.lua](2-manga-nightmode.lua)
 
-Shows comic pages in their normal colours in night mode, while menus and Rakuyomi's screens stay dark. Night mode stays on: comic pages are drawn already inverted, the same as the reader's **Invert Document** option (always on for comics), so the two inversions cancel out. Page margins and the gaps between pages keep their day colours. It doesn't change night mode, warmth or brightness, so AutoWarmth, other schedules and the night mode toggle work as usual. Turn night mode off and comics show normally.
+Shows comic pages in their normal colours in night mode, while menus and Rakuyomi's screens stay dark. Night mode stays on: comic pages are drawn already inverted, the same as the reader's **Invert Document** option, so the two inversions cancel out. That option is only on while a comic is open and isn't saved with it, so removing the patch leaves it off. Page margins and the gaps between pages keep their day colours. It doesn't change night mode, warmth or brightness, so AutoWarmth, other schedules and the night mode toggle work as usual. Turn night mode off and comics show normally.
 
 If you use [Panels+](https://github.com/KristanLaimon/PanelsPlus), its panel viewer shows comic panels in their normal colours too. Tested with Panels+ 1.4.0.
 

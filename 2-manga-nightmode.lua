@@ -1,4 +1,4 @@
--- 2-manga-nightmode.lua v2.0.0
+-- 2-manga-nightmode.lua v2.1.0
 --[[
 Keep comic artwork un-inverted in night mode, while menus stay dark.
 
@@ -12,6 +12,11 @@ KOReader already does this for the "Invert Document" option in the reader's
 bottom menu (nightmode_document), which KoptInterface.drawPage checks before
 drawing. CBZ, CBR and CBT pages all go through that function, so the patch
 switches the option on for comics.
+
+The option is only switched on while the comic is open. It's left out of the
+comic's saved settings, and any value already saved there (earlier versions of
+this patch saved it) is removed when the comic is next closed, so removing the
+patch leaves comics with the option off.
 
 The margins around a page, the scroll-mode background and the gap between
 pages are painted by ReaderView, not the document, so they'd come out dark.
@@ -30,6 +35,7 @@ Install to koreader/patches/.
 ]]
 
 local KoptInterface = require("document/koptinterface")
+local ReaderConfig = require("apps/reader/modules/readerconfig")
 local ReaderView = require("apps/reader/modules/readerview")
 local Screen = require("device").screen
 local logger = require("logger")
@@ -54,7 +60,7 @@ end
 -- pages are cached under a key that includes every reader option. If the
 -- value differed between pre-rendering and drawing, the pre-rendered next
 -- page would never be found and every page turn would render from scratch.
--- It ends up saved in the comic's settings, which is harmless.
+-- It's kept out of the comic's saved settings further down.
 local function forceInvert(doc)
     if isManga(doc.file) then
         doc.configurable.nightmode_document = 1
@@ -71,6 +77,21 @@ local orig_hintPage = KoptInterface.hintPage
 function KoptInterface:hintPage(doc, ...)
     forceInvert(doc)
     return orig_hintPage(self, doc, ...)
+end
+
+-- ReaderConfig saves every reader option into the comic's settings, including
+-- the one switched on above. Taking it back out after each save means the
+-- comic falls back to the default (off) whenever it's opened without the
+-- patch. This also clears the value earlier versions of the patch left there.
+-- The last save runs after the document is closed, so the file is taken from
+-- the settings rather than from self.ui.document.
+local orig_onSaveSettings = ReaderConfig.onSaveSettings
+function ReaderConfig:onSaveSettings(...)
+    orig_onSaveSettings(self, ...)
+    local doc_settings = self.ui.doc_settings
+    if isManga(doc_settings:readSetting("doc_path")) then
+        doc_settings:delSetting(self.options.prefix .. "_nightmode_document")
+    end
 end
 
 -- Runs fn with tbl[key] inverted, then puts it back. rawget keeps an
