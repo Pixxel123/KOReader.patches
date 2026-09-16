@@ -8,7 +8,9 @@ Tested on KOReader 2026.07.
 
 ### [🞂 2-manga-nightmode.lua](2-manga-nightmode.lua)
 
-Turns night mode off while a comic is open and turns it back on when you close it, so artwork isn't shown inverted. AutoWarmth's night mode schedule can't switch it back on while you're reading a comic, but you can still turn it on by hand from the menu or with a gesture. Night mode schedules from other plugins might not be held off. It only changes night mode, never warmth or brightness.
+Shows comic pages in their normal colours in night mode, while menus and Rakuyomi's screens stay dark. Night mode stays on: comic pages are drawn already inverted, the same as the reader's **Invert Document** option (always on for comics), so the two inversions cancel out. Page margins and the gaps between pages keep their day colours. It doesn't change night mode, warmth or brightness, so AutoWarmth, other schedules and the night mode toggle work as usual. Turn night mode off and comics show normally.
+
+If you use [Panels+](https://github.com/KristanLaimon/PanelsPlus), its panel viewer shows comic panels in their normal colours too. Tested with Panels+ 1.4.0.
 
 ### [🞂 2-manga-no-history.lua](2-manga-no-history.lua)
 
