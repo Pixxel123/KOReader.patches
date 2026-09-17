@@ -1,4 +1,4 @@
--- 2-bubblezoom-overlay.lua v1.1.0
+-- 2-bubblezoom-overlay.lua v1.2.0
 --[[
 Change how Bubble Zoom shows an enlarged speech bubble.
 
@@ -75,10 +75,15 @@ local OUTLINE_LAYER_DROP = 0.5
 -- this share of the area's size, up to MAX_GROW times.
 local GROW_BY = 0.35
 local MAX_GROW = 3
--- A shape is only shown if its outline is this smooth (perimeter² / (4π · area))
--- and this close to convex (area / convex hull); leaks into the artwork aren't.
+-- A shape is only shown if it is this smooth (perimeter² / (4π · area)) and
+-- this close to convex (area / convex hull), judged with narrow gaps closed
+-- (see CLOSE_RADIUS); leaks into the artwork aren't.
 local MAX_RAGGEDNESS = 5
 local MIN_CONVEXITY = 0.7
+-- Gaps in the shape up to this wide (working pixels) are closed before it is
+-- judged, so the spikes of a burst balloon or the notches of a hatched outline
+-- don't count against it, while a long leak into the artwork still does.
+local CLOSE_RADIUS = 8
 -- Extending the area is kept only if the shape gets no more ragged or less
 -- convex than this: another balloon joined on keeps the shape clean, artwork doesn't.
 local MAX_RAGGEDNESS_RISE = 1.0
@@ -610,6 +615,24 @@ local function shapeStats(shape, solid, aw, ah)
     }
 end
 
+-- Stats of the shape with gaps narrower than CLOSE_RADIUS closed: grow it by
+-- the radius, then shrink the result by the radius.
+local function closedStats(shape, solid, aw, ah)
+    local n = aw * ah
+    local r3 = CLOSE_RADIUS * 3
+    local dist = ffi.new("int32_t[?]", n)
+    local closed = ffi.new("uint8_t[?]", n)
+    distanceFrom(shape, aw, ah, solid, CLOSE_RADIUS + 1, dist)
+    for i = 0, n - 1 do
+        if dist[i] <= r3 then closed[i] = 1 end
+    end
+    distanceFrom(closed, aw, ah, { [0] = true }, CLOSE_RADIUS + 1, dist)
+    for i = 0, n - 1 do
+        if closed[i] == 1 and dist[i] <= r3 then closed[i] = 0 end
+    end
+    return shapeStats(closed, { [1] = true }, aw, ah)
+end
+
 -- The finished enlargement, the size of content: the page's pixels inside
 -- the shape, a white edge that fades out, and alpha, all from the distance
 -- to the shape on the working grid, scaled up smoothly.
@@ -707,7 +730,7 @@ local function composeShape(content, tap_x, tap_y, o)
     markEnclosed(shape, queue, aw, ah)
     outlineBand(shape, light, queue, dist, aw, ah, math.min(255, math.max(1, math.ceil(o.outline / f))))
     local solid = { [1] = true, [3] = true, [4] = true }
-    local stats = shapeStats(shape, solid, aw, ah)
+    local stats = closedStats(shape, solid, aw, ah)
     if stats.raggedness > MAX_RAGGEDNESS or stats.convexity < MIN_CONVEXITY then
         return nil, "the shape runs into the artwork", sides, stats
     end
