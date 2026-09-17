@@ -55,6 +55,9 @@ local MAX_OUTLINE = 12
 local HALO = 2
 -- Pixels at least this light (0-255) count as the inside of a balloon.
 local LIGHT = 170
+-- Largest working grid the shape is found on, in pixels. Bigger enlargements
+-- are worked on a coarser grid; the masks are scaled back up smoothly.
+local MAX_WORK_PIXELS = 60000
 -- When a bubble's inside reaches the edge of the enlarged area (balloons joined
 -- to another, or cut off by Bubble Zoom's rectangle), that side is extended by
 -- this share of the area's size, up to MAX_GROW times.
@@ -272,6 +275,13 @@ local function distanceFrom(shape, w, h, is_inside, cap, dist)
             dist[i] = far
         end
     end
+    local function relax(j, nd)
+        if nd < dist[j] then
+            dist[j] = nd
+            local b = buckets[nd]
+            b[#b + 1] = j
+        end
+    end
     for d = 0, far - 3 do
         local bucket = buckets[d]
         for k = 1, #bucket do
@@ -280,13 +290,6 @@ local function distanceFrom(shape, w, h, is_inside, cap, dist)
                 local x = i % w
                 local up, down = i >= w, i < n - w
                 local left, right = x > 0, x < w - 1
-                local function relax(j, nd)
-                    if nd < dist[j] then
-                        dist[j] = nd
-                        local b = buckets[nd]
-                        b[#b + 1] = j
-                    end
-                end
                 if left then relax(i - 1, d + 3) end
                 if right then relax(i + 1, d + 3) end
                 if up then
@@ -711,7 +714,7 @@ local function shapeFor(overlay, bubblezoom, bb_type)
         local tap_x = ((bubblezoom.overlay_tap_x or (src.x + src.w / 2)) - src.x) * zoom
         local tap_y = ((bubblezoom.overlay_tap_y or (src.y + src.h / 2)) - src.y) * zoom
         local shaped, why, sides, stats = composeShape(content, tap_x, tap_y, {
-            factor = math.max(1, math.floor(scale)),
+            factor = math.max(1, math.floor(scale), math.ceil(math.sqrt(rw * rh / MAX_WORK_PIXELS))),
             inverted = inverted,
             outline = MAX_OUTLINE * zoom,
             halo = Screen:scaleBySize(HALO),
