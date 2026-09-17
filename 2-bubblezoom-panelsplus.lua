@@ -77,6 +77,7 @@ local function fitsOnPage(rect, page_size)
 end
 
 -- Area of the convex hull of integer points (monotone chain).
+-- The same function is in 2-bubblezoom-overlay.lua; keep the two identical.
 local function hullArea(xs, ys, n)
     local order = {}
     for i = 1, n do order[i] = i end

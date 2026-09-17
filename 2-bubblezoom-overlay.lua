@@ -58,6 +58,18 @@ local LIGHT = 170
 -- Largest working grid the shape is found on, in pixels. Bigger enlargements
 -- are worked on a coarser grid; the masks are scaled back up smoothly.
 local MAX_WORK_PIXELS = 60000
+-- How far from the press to look for the bubble's inside, as a share of
+-- the working grid's longer side.
+local INSIDE_REACH = 0.06
+-- A light area with more of the grid's border than this share isn't a
+-- bubble's inside.
+local MAX_BORDER_SHARE = 0.25
+-- Smallest share of the grid the inside may cover.
+local MIN_INSIDE_SHARE = 0.08
+-- Which outward dark run counts as this bubble's outline thickness (percentile).
+local OUTLINE_PERCENTILE = 0.6
+-- Outline growth stops at the first layer smaller than this share of the first.
+local OUTLINE_LAYER_DROP = 0.5
 -- When a bubble's inside reaches the edge of the enlarged area (balloons joined
 -- to another, or cut off by Bubble Zoom's rectangle), that side is extended by
 -- this share of the area's size, up to MAX_GROW times.
@@ -308,6 +320,7 @@ local function distanceFrom(shape, w, h, is_inside, cap, dist)
 end
 
 -- Area of the convex hull of integer points (monotone chain).
+-- The same function is in 2-bubblezoom-panelsplus.lua; keep the two identical.
 local function hullArea(xs, ys, n)
     local order = {}
     for i = 1, n do order[i] = i end
@@ -373,20 +386,9 @@ local function sidesOf(shape, w, h, mark)
     return sides
 end
 
--- Builds the shaped enlargement from content (the enlarged area of the page).
--- tap_x/tap_y is the press in content pixels. Returns a buffer with alpha the
--- size of content (or nil and a reason when the shape isn't clean), and how
--- many pixels of the bubble's inside lie on each side of the content.
--- o.factor: work on content shrunk by this much (the masks are scaled back up
---   smoothly); o.inverted: content is inverted for night mode; o.outline and
---   o.halo: MAX_OUTLINE and HALO in content pixels.
-local function composeShape(content, tap_x, tap_y, o)
+-- Which pixels of the enlarged area are light, on the working grid.
+local function lightMask(content, aw, ah, inverted)
     local W, H = content:getWidth(), content:getHeight()
-    local f = math.max(1, o.factor or 1)
-    local aw = math.max(1, math.floor(W / f + 0.5))
-    local ah = math.max(1, math.floor(H / f + 0.5))
-    local n = aw * ah
-
     local small = content
     if aw ~= W or ah ~= H then
         small = mupdf().scaleBlitBuffer(content, aw, ah)
@@ -396,31 +398,28 @@ local function composeShape(content, tap_x, tap_y, o)
     if small ~= content then
         small:free()
     end
-    local light = ffi.new("uint8_t[?]", n)
+    local light = ffi.new("uint8_t[?]", aw * ah)
     local gp, gs = ffi.cast("uint8_t *", gray.data), tonumber(gray.stride)
     for y = 0, ah - 1 do
         local row, base = gp + y * gs, y * aw
         for x = 0, aw - 1 do
             local v = row[x]
-            if o.inverted then v = 255 - v end
+            if inverted then v = 255 - v end
             if v >= LIGHT then light[base + x] = 1 end
         end
     end
     gray:free()
+    return light
+end
 
-    -- shape: 0 = unset, 1 = inside, 2 = outside, 3 = enclosed, 4 = outline,
-    -- 5 = white edge, 6 = another light area, 7 = outline candidate
-    local shape = ffi.new("uint8_t[?]", n)
-    local queue = ffi.new("int32_t[?]", n)
-    local dist = ffi.new("uint8_t[?]", n)
+-- Marks the bubble's inside 1 in shape: the largest light area near (cx, cy)
+-- that stays inside the grid, since the insides of letters are small and the
+-- page around a bubble runs out of it. Each area looked at gets its own mark
+-- first. Returns the inside's side counts, or nil, a reason and the counts.
+local function findInside(shape, light, queue, aw, ah, cx, cy)
+    local n = aw * ah
     local border_len = 2 * (aw + ah) - 4
-
-    -- The bubble's inside is the largest light area near the press that stays
-    -- inside the enlargement: the insides of letters are small, and the page
-    -- around a bubble runs out of it. Each area found gets its own mark.
-    local cx = math.min(aw - 1, math.max(0, math.floor(tap_x * aw / W)))
-    local cy = math.min(ah - 1, math.max(0, math.floor(tap_y * ah / H)))
-    local reach = math.max(2, math.ceil(0.06 * math.max(aw, ah)))
+    local reach = math.max(2, math.ceil(INSIDE_REACH * math.max(aw, ah)))
     local best, best_size, best_sides = nil, 0, nil
     local mark = 5
     for y = math.max(0, cy - reach), math.min(ah - 1, cy + reach) do
@@ -431,7 +430,7 @@ local function composeShape(content, tap_x, tap_y, o)
                 local size = fillLight(shape, light, queue, aw, ah, i, mark)
                 if size > best_size then
                     local sides = sidesOf(shape, aw, ah, mark)
-                    if sides.left + sides.right + sides.top + sides.bottom <= 0.25 * border_len then
+                    if sides.left + sides.right + sides.top + sides.bottom <= MAX_BORDER_SHARE * border_len then
                         best, best_size, best_sides = mark, size, sides
                     end
                 end
@@ -441,14 +440,19 @@ local function composeShape(content, tap_x, tap_y, o)
     if not best then
         return nil, "no light area near the press stays inside the enlargement"
     end
-    if best_size < 0.08 * n then
+    if best_size < MIN_INSIDE_SHARE * n then
         return nil, "the light area around the press is too small", best_sides
     end
     for i = 0, n - 1 do
         shape[i] = shape[i] == best and 1 or 0
     end
+    return best_sides
+end
 
-    -- Enclosed = not inside and not connected (8-way) to the border: lettering.
+-- Marks what the inside encloses 3 (lettering) and everything else 2:
+-- enclosed = not inside and not connected (8-way) to the grid's border.
+local function markEnclosed(shape, queue, aw, ah)
+    local n = aw * ah
     local head, tail = 0, 0
     local function outside(i)
         if shape[i] == 0 then
@@ -477,15 +481,17 @@ local function composeShape(content, tap_x, tap_y, o)
     for i = 0, n - 1 do
         if shape[i] == 0 then shape[i] = 3 end
     end
+end
 
-    -- The outline, and lettering touching it: dark pixels grown outwards one
-    -- layer at a time. Each layer around a whole outline is about as big as the
-    -- first; once a layer is less than half that, only art lines touching the
-    -- outline are left, so growing stops there.
-    local max_steps = math.min(255, math.max(1, math.ceil(o.outline / f)))
-    -- This bubble's outline thickness: from each edge pixel of the inside,
-    -- the dark pixels straight outwards. Most of the edge shows the outline
-    -- itself, so artwork against part of it doesn't widen the band.
+-- Marks the outline, and lettering touching it, 4: dark pixels grown outwards
+-- from the inside one layer at a time, up to max_steps. First this bubble's
+-- own outline thickness is estimated from the dark runs straight outwards
+-- from the inside's edge, so artwork against part of the outline doesn't
+-- widen the band. Each layer around a whole outline is about as big as the
+-- first; once a layer is less than half that, only art lines touching the
+-- outline are left, so growing stops there.
+local function outlineBand(shape, light, queue, dist, aw, ah, max_steps)
+    local n = aw * ah
     local runs = {}
     for y = 0, ah - 1 do
         for x = 0, aw - 1 do
@@ -517,7 +523,7 @@ local function composeShape(content, tap_x, tap_y, o)
     end
     if #runs > 0 then
         table.sort(runs)
-        local typical = runs[math.ceil(0.6 * #runs)]
+        local typical = runs[math.ceil(OUTLINE_PERCENTILE * #runs)]
         if typical >= max_steps then
             -- Dark all the way out: a light balloon on a dark background, with
             -- no outline of its own to keep.
@@ -526,7 +532,7 @@ local function composeShape(content, tap_x, tap_y, o)
             max_steps = math.min(max_steps, typical + 1)
         end
     end
-    head, tail = 0, 0
+    local head, tail = 0, 0
     for i = 0, n - 1 do
         local s = shape[i]
         if s == 1 or s == 3 then
@@ -560,7 +566,7 @@ local function composeShape(content, tap_x, tap_y, o)
     end
     local keep = max_steps
     for k = 2, max_steps do
-        if (layers[k] or 0) < 0.5 * (layers[1] or 0) then
+        if (layers[k] or 0) < OUTLINE_LAYER_DROP * (layers[1] or 0) then
             keep = k
             break
         end
@@ -570,9 +576,10 @@ local function composeShape(content, tap_x, tap_y, o)
             shape[i] = dist[i] <= keep and 4 or 2
         end
     end
+end
 
-    -- How clean the shape is: perimeter² / (4π · area) and area / convex hull.
-    local solid = { [1] = true, [3] = true, [4] = true }
+-- How clean the solid shape is: perimeter² / (4π · area) and area / convex hull.
+local function shapeStats(shape, solid, aw, ah)
     local area, perimeter, points, xs, ys = 0, 0, 0, {}, {}
     for y = 0, ah - 1 do
         local row = y * aw
@@ -596,24 +603,25 @@ local function composeShape(content, tap_x, tap_y, o)
         end
     end
     local hull = hullArea(xs, ys, points)
-    local stats = {
+    return {
         raggedness = perimeter * perimeter / (4 * math.pi * area),
         convexity = hull > 0 and area / hull or 0,
-        share = area / n,
+        share = area / (aw * ah),
     }
-    if stats.raggedness > MAX_RAGGEDNESS or stats.convexity < MIN_CONVEXITY then
-        return nil, "the shape runs into the artwork", best_sides, stats
-    end
+end
 
-    -- The white edge and a soft outer edge, from the distance to the shape.
-    local halo_px = math.max(1, o.halo / f)
+-- The finished enlargement, the size of content: the page's pixels inside
+-- the shape, a white edge that fades out, and alpha, all from the distance
+-- to the shape on the working grid, scaled up smoothly.
+local function composeMasks(content, shape, solid, aw, ah, halo_px, inverted)
+    local W, H = content:getWidth(), content:getHeight()
+    local n = aw * ah
     local outer = halo_px * 3
     local sdist = ffi.new("int32_t[?]", n)
     distanceFrom(shape, aw, ah, solid, math.ceil(halo_px) + 2, sdist)
-    -- One mask at the working size, scaled back up smoothly: grey = how much
-    -- of the page's pixel shows (fading to white one pixel outside the
-    -- shape), alpha = full until a pixel short of the edge's end and gone a
-    -- pixel past it.
+    -- One mask: grey = how much of the page's pixel shows (fading to white
+    -- one pixel outside the shape), alpha = full until a pixel short of the
+    -- edge's end and gone a pixel past it.
     local mask = Blitbuffer.new(aw, ah, Blitbuffer.TYPE_BB8A)
     local mp, ms = ffi.cast("uint8_t *", mask.data), tonumber(mask.stride)
     for y = 0, ah - 1 do
@@ -648,7 +656,7 @@ local function composeShape(content, tap_x, tap_y, o)
     local out = Blitbuffer.new(W, H, rgb and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8A)
     local op, ostride = ffi.cast("uint8_t *", out.data), tonumber(out.stride)
     local cbpp = rgb and 4 or 1
-    local halo_grey = o.inverted and 0 or 255
+    local halo_grey = inverted and 0 or 255
     for y = 0, H - 1 do
         local mrow, crow, orow = mp + y * ms, cp + y * cs, op + y * ostride
         for x = 0, W - 1 do
@@ -667,7 +675,43 @@ local function composeShape(content, tap_x, tap_y, o)
         src_bb:free()
     end
     mask:free()
-    return out, nil, best_sides, stats
+    return out
+end
+
+-- Builds the shaped enlargement from content (the enlarged area of the page).
+-- tap_x/tap_y is the press in content pixels. Returns a buffer with alpha the
+-- size of content (or nil and a reason when the shape isn't clean), how many
+-- pixels of the bubble's inside lie on each side of the content, and the
+-- shape's stats. o.factor: work on content shrunk by this much; o.inverted:
+-- content is inverted for night mode; o.outline and o.halo: MAX_OUTLINE and
+-- HALO in content pixels.
+local function composeShape(content, tap_x, tap_y, o)
+    local W, H = content:getWidth(), content:getHeight()
+    local f = math.max(1, o.factor or 1)
+    local aw = math.max(1, math.floor(W / f + 0.5))
+    local ah = math.max(1, math.floor(H / f + 0.5))
+    local n = aw * ah
+    local light = lightMask(content, aw, ah, o.inverted)
+
+    -- shape: 0 = unset, 1 = inside, 2 = outside, 3 = enclosed, 4 = outline,
+    -- 6 and up = a light area looked at while finding the inside, 7 = outline candidate
+    local shape = ffi.new("uint8_t[?]", n)
+    local queue = ffi.new("int32_t[?]", n)
+    local dist = ffi.new("uint8_t[?]", n)
+    local cx = math.min(aw - 1, math.max(0, math.floor(tap_x * aw / W)))
+    local cy = math.min(ah - 1, math.max(0, math.floor(tap_y * ah / H)))
+    local sides, why, err_sides = findInside(shape, light, queue, aw, ah, cx, cy)
+    if not sides then
+        return nil, why, err_sides
+    end
+    markEnclosed(shape, queue, aw, ah)
+    outlineBand(shape, light, queue, dist, aw, ah, math.min(255, math.max(1, math.ceil(o.outline / f))))
+    local solid = { [1] = true, [3] = true, [4] = true }
+    local stats = shapeStats(shape, solid, aw, ah)
+    if stats.raggedness > MAX_RAGGEDNESS or stats.convexity < MIN_CONVEXITY then
+        return nil, "the shape runs into the artwork", sides, stats
+    end
+    return composeMasks(content, shape, solid, aw, ah, math.max(1, o.halo / f), o.inverted), nil, sides, stats
 end
 
 -- Draws the enlarged area into a new buffer of w x h at zoom.
