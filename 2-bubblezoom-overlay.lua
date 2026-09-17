@@ -342,6 +342,37 @@ local function hullArea(xs, ys, n)
     return math.abs(area) / 2
 end
 
+-- Fills the light area containing start with mark (4-way); returns its size.
+local function fillLight(shape, light, queue, w, h, start, mark)
+    local n = w * h
+    local head, tail = 0, 1
+    queue[0], shape[start] = start, mark
+    while head < tail do
+        local i = queue[head]
+        head = head + 1
+        local x = i % w
+        if x > 0 and shape[i - 1] == 0 and light[i - 1] == 1 then shape[i - 1] = mark; queue[tail] = i - 1; tail = tail + 1 end
+        if x < w - 1 and shape[i + 1] == 0 and light[i + 1] == 1 then shape[i + 1] = mark; queue[tail] = i + 1; tail = tail + 1 end
+        if i >= w and shape[i - w] == 0 and light[i - w] == 1 then shape[i - w] = mark; queue[tail] = i - w; tail = tail + 1 end
+        if i < n - w and shape[i + w] == 0 and light[i + w] == 1 then shape[i + w] = mark; queue[tail] = i + w; tail = tail + 1 end
+    end
+    return tail
+end
+
+-- How many pixels with this mark lie on each side of the grid.
+local function sidesOf(shape, w, h, mark)
+    local sides = { left = 0, right = 0, top = 0, bottom = 0 }
+    for x = 0, w - 1 do
+        if shape[x] == mark then sides.top = sides.top + 1 end
+        if shape[(h - 1) * w + x] == mark then sides.bottom = sides.bottom + 1 end
+    end
+    for y = 0, h - 1 do
+        if shape[y * w] == mark then sides.left = sides.left + 1 end
+        if shape[y * w + w - 1] == mark then sides.right = sides.right + 1 end
+    end
+    return sides
+end
+
 -- Builds the shaped enlargement from content (the enlarged area of the page).
 -- tap_x/tap_y is the press in content pixels. Returns a buffer with alpha the
 -- size of content (or nil and a reason when the shape isn't clean), and how
@@ -384,44 +415,25 @@ local function composeShape(content, tap_x, tap_y, o)
     local dist = ffi.new("uint8_t[?]", n)
     local border_len = 2 * (aw + ah) - 4
 
-    -- Fills the light area containing start with mark; returns its size and
-    -- how many of its pixels lie on each side of the enlargement.
-    local function fillLight(start, mark)
-        local head, tail = 0, 1
-        queue[0], shape[start] = start, mark
-        local sides = { left = 0, right = 0, top = 0, bottom = 0 }
-        while head < tail do
-            local i = queue[head]
-            head = head + 1
-            local x = i % aw
-            local y = (i - x) / aw
-            if x == 0 then sides.left = sides.left + 1 end
-            if x == aw - 1 then sides.right = sides.right + 1 end
-            if y == 0 then sides.top = sides.top + 1 end
-            if y == ah - 1 then sides.bottom = sides.bottom + 1 end
-            if x > 0 and shape[i - 1] == 0 and light[i - 1] == 1 then shape[i - 1] = mark; queue[tail] = i - 1; tail = tail + 1 end
-            if x < aw - 1 and shape[i + 1] == 0 and light[i + 1] == 1 then shape[i + 1] = mark; queue[tail] = i + 1; tail = tail + 1 end
-            if y > 0 and shape[i - aw] == 0 and light[i - aw] == 1 then shape[i - aw] = mark; queue[tail] = i - aw; tail = tail + 1 end
-            if y < ah - 1 and shape[i + aw] == 0 and light[i + aw] == 1 then shape[i + aw] = mark; queue[tail] = i + aw; tail = tail + 1 end
-        end
-        return tail, sides
-    end
-
     -- The bubble's inside is the largest light area near the press that stays
     -- inside the enlargement: the insides of letters are small, and the page
-    -- around a bubble runs out of it.
+    -- around a bubble runs out of it. Each area found gets its own mark.
     local cx = math.min(aw - 1, math.max(0, math.floor(tap_x * aw / W)))
     local cy = math.min(ah - 1, math.max(0, math.floor(tap_y * ah / H)))
     local reach = math.max(2, math.ceil(0.06 * math.max(aw, ah)))
     local best, best_size, best_sides = nil, 0, nil
+    local mark = 5
     for y = math.max(0, cy - reach), math.min(ah - 1, cy + reach) do
         for x = math.max(0, cx - reach), math.min(aw - 1, cx + reach) do
             local i = y * aw + x
-            if light[i] == 1 and shape[i] == 0 then
-                local size, sides = fillLight(i, 6)
-                local on_border = sides.left + sides.right + sides.top + sides.bottom
-                if on_border <= 0.25 * border_len and size > best_size then
-                    best, best_size, best_sides = i, size, sides
+            if light[i] == 1 and shape[i] == 0 and mark < 255 then
+                mark = mark + 1
+                local size = fillLight(shape, light, queue, aw, ah, i, mark)
+                if size > best_size then
+                    local sides = sidesOf(shape, aw, ah, mark)
+                    if sides.left + sides.right + sides.top + sides.bottom <= 0.25 * border_len then
+                        best, best_size, best_sides = mark, size, sides
+                    end
                 end
             end
         end
@@ -432,8 +444,9 @@ local function composeShape(content, tap_x, tap_y, o)
     if best_size < 0.08 * n then
         return nil, "the light area around the press is too small", best_sides
     end
-    ffi.fill(shape, n, 0)
-    fillLight(best, 1)
+    for i = 0, n - 1 do
+        shape[i] = shape[i] == best and 1 or 0
+    end
 
     -- Enclosed = not inside and not connected (8-way) to the border: lettering.
     local head, tail = 0, 0
@@ -597,31 +610,29 @@ local function composeShape(content, tap_x, tap_y, o)
     local outer = halo_px * 3
     local sdist = ffi.new("int32_t[?]", n)
     distanceFrom(shape, aw, ah, solid, math.ceil(halo_px) + 2, sdist)
-    -- Masks at the working size, scaled back up smoothly: body = the page's
-    -- pixels, fading to white one pixel outside the shape; all = alpha, full
-    -- until a pixel short of the edge's end and gone a pixel past it.
-    local body_bb = Blitbuffer.new(aw, ah, Blitbuffer.TYPE_BB8)
-    local all_bb = Blitbuffer.new(aw, ah, Blitbuffer.TYPE_BB8)
-    local bp, bs = ffi.cast("uint8_t *", body_bb.data), tonumber(body_bb.stride)
-    local ap, as = ffi.cast("uint8_t *", all_bb.data), tonumber(all_bb.stride)
+    -- One mask at the working size, scaled back up smoothly: grey = how much
+    -- of the page's pixel shows (fading to white one pixel outside the
+    -- shape), alpha = full until a pixel short of the edge's end and gone a
+    -- pixel past it.
+    local mask = Blitbuffer.new(aw, ah, Blitbuffer.TYPE_BB8A)
+    local mp, ms = ffi.cast("uint8_t *", mask.data), tonumber(mask.stride)
     for y = 0, ah - 1 do
+        local row = mp + y * ms
         for x = 0, aw - 1 do
             local d = sdist[y * aw + x]
             local b = 1 - d / 3
             local a = (outer + 3 - d) / 6
             if b < 0 then b = 0 elseif b > 1 then b = 1 end
             if a < 0 then a = 0 elseif a > 1 then a = 1 end
-            bp[y * bs + x] = math.floor(b * 255 + 0.5)
-            ap[y * as + x] = math.floor(a * 255 + 0.5)
+            row[2 * x] = math.floor(b * 255 + 0.5)
+            row[2 * x + 1] = math.floor(a * 255 + 0.5)
         end
     end
     if aw ~= W or ah ~= H then
-        local b2 = mupdf().scaleBlitBuffer(body_bb, W, H)
-        local a2 = mupdf().scaleBlitBuffer(all_bb, W, H)
-        body_bb:free(); all_bb:free()
-        body_bb, all_bb = b2, a2
-        bp, bs = ffi.cast("uint8_t *", body_bb.data), tonumber(body_bb.stride)
-        ap, as = ffi.cast("uint8_t *", all_bb.data), tonumber(all_bb.stride)
+        local m2 = mupdf().scaleBlitBuffer(mask, W, H)
+        mask:free()
+        mask = m2
+        mp, ms = ffi.cast("uint8_t *", mask.data), tonumber(mask.stride)
     end
 
     -- Keep colour on colour screens; otherwise grey with alpha.
@@ -639,11 +650,11 @@ local function composeShape(content, tap_x, tap_y, o)
     local cbpp = rgb and 4 or 1
     local halo_grey = o.inverted and 0 or 255
     for y = 0, H - 1 do
-        local brow, arow, crow, orow = bp + y * bs, ap + y * as, cp + y * cs, op + y * ostride
+        local mrow, crow, orow = mp + y * ms, cp + y * cs, op + y * ostride
         for x = 0, W - 1 do
-            local a = arow[x]
+            local a = mrow[2 * x + 1]
             if a > 0 then
-                local b = brow[x]
+                local b = mrow[2 * x]
                 local o_px, c_px = bpp * x, cbpp * x
                 for c = 0, channels - 1 do
                     orow[o_px + c] = math.floor((crow[c_px + c] * b + halo_grey * (255 - b)) / 255 + 0.5)
@@ -655,7 +666,7 @@ local function composeShape(content, tap_x, tap_y, o)
     if src_bb ~= content then
         src_bb:free()
     end
-    body_bb:free(); all_bb:free()
+    mask:free()
     return out, nil, best_sides, stats
 end
 
